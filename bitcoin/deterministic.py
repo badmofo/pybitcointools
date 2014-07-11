@@ -41,34 +41,34 @@ def crack_electrum_wallet(mpk,pk,n,for_change=0):
     return subtract_privkeys(pk, offset)
 
 # Below code ASSUMES binary inputs and compressed pubkeys
-PRIVATE = '\x04\x88\xAD\xE4'
-PUBLIC = '\x04\x88\xB2\x1E'
+BIP32_PUBLIC  = ['\x04\x88\xb2\x1e', '\x04\x35\x87\xcf'] # mainnet, testnet
+BIP32_PRIVATE = ['\x04\x88\xad\xe4', '\x04\x35\x83\x94'] # mainnet, testnet
 
 # BIP32 child key derivation
 def raw_bip32_ckd(rawtuple, i):
     vbytes, depth, fingerprint, oldi, chaincode, key = rawtuple
     i = int(i)
 
-    if vbytes == PRIVATE:
+    if vbytes in BIP32_PRIVATE:
         priv = key
         pub = privtopub(key)
     else:
         pub = key
 
     if i >= 2**31:
-        if vbytes == PUBLIC:
+        if vbytes in BIP32_PUBLIC:
             raise Exception("Can't do private derivation on public key!")
         I = hmac.new(chaincode,'\x00'+priv[:32]+encode(i,256,4),hashlib.sha512).digest()
     else:
         I = hmac.new(chaincode,pub+encode(i,256,4),hashlib.sha512).digest()
 
-    if vbytes == PRIVATE:
+    if vbytes in BIP32_PRIVATE:
         newkey = add_privkeys(I[:32]+'\x01',priv)
         fingerprint = bin_hash160(privtopub(key))[:4]
-    if vbytes == PUBLIC:
+    if vbytes in BIP32_PUBLIC:
         newkey = add_pubkeys(compress(privtopub(I[:32])),key)
         fingerprint = bin_hash160(key)[:4]
-
+    
     return (vbytes, depth + 1, fingerprint, i, I[32:], newkey)
 
 def bip32_serialize(rawtuple):
@@ -76,7 +76,7 @@ def bip32_serialize(rawtuple):
     depth = chr(depth % 256)
     i = encode(i,256,4)
     chaincode = encode(hash_to_int(chaincode),256,32)
-    keydata = '\x00'+key[:-1] if vbytes == PRIVATE else key
+    keydata = '\x00'+key[:-1] if vbytes in BIP32_PRIVATE else key
     bindata = vbytes + depth + fingerprint + i + chaincode + keydata
     return changebase(bindata+bin_dbl_sha256(bindata)[:4],256,58)
 
@@ -89,12 +89,13 @@ def bip32_deserialize(data):
     fingerprint = dbin[5:9]
     i = decode(dbin[9:13],256)
     chaincode = dbin[13:45]
-    key = dbin[46:78]+'\x01' if vbytes == PRIVATE else dbin[45:78]
+    key = dbin[46:78]+'\x01' if vbytes in BIP32_PRIVATE else dbin[45:78]
     return (vbytes, depth, fingerprint, i, chaincode, key)
 
 def raw_bip32_privtopub(rawtuple):
     vbytes, depth, fingerprint, i, chaincode, key = rawtuple
-    return (PUBLIC, depth, fingerprint, i, chaincode, privtopub(key))
+    header = BIP32_PUBLIC[int(vbytes == BIP32_PRIVATE[1])]
+    return (header, depth, fingerprint, i, chaincode, qprivtopub(key))
 
 def bip32_privtopub(data):
     return bip32_serialize(raw_bip32_privtopub(bip32_deserialize(data)))
@@ -102,15 +103,28 @@ def bip32_privtopub(data):
 def bip32_ckd(data,i):
     return bip32_serialize(raw_bip32_ckd(bip32_deserialize(data),i))
 
-def bip32_master_key(seed):
+def bip32_master_key(seed, network='btc'):
+    assert network in ('btc', 'testnet')
+    header = BIP32_PRIVATE[0] if network == 'btc' else BIP32_PRIVATE[1]
     I = hmac.new("Bitcoin seed",seed,hashlib.sha512).digest()
-    return bip32_serialize((PRIVATE, 0, '\x00'*4, 0, I[32:], I[:32]+'\x01'))
+    return bip32_serialize((header, 0, '\x00'*4, 0, I[32:], I[:32]+'\x01'))
 
 def bip32_bin_extract_key(data):
     return bip32_deserialize(data)[-1]
 
 def bip32_extract_key(data):
     return bip32_deserialize(data)[-1].encode('hex')
+
+def bip32_get_network(xkey):
+    try:
+        vbyte = bitcoin.get_version_byte(xkey)
+        header = chr(vbyte) + bitcoin.b58check_to_bin(xkey)[:3]
+        if header == BIP32_PUBLIC[0] or header == BIP32_PRIVATE[0]:
+            return 'btc'
+        if header == BIP32_PUBLIC[1] or header == BIP32_PRIVATE[1]:
+            return 'testnet' 
+    except AssertionError, e:
+        pass
 
 # Exploits the same vulnerability as above in Electrum wallets
 # Takes a BIP32 pubkey and one of the child privkeys of its corresponding privkey
@@ -126,7 +140,7 @@ def raw_crack_bip32_privkey(parent_pub,priv):
 
     pprivkey = subtract_privkeys(key,I[:32]+'\x01')
 
-    return (PRIVATE, pdepth, pfingerprint, pi, pchaincode, pprivkey)
+    return (vbytes, pdepth, pfingerprint, pi, pchaincode, pprivkey)
 
 def crack_bip32_privkey(parent_pub,priv):
     dsppub = bip32_deserialize(parent_pub)
