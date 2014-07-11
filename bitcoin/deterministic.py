@@ -117,8 +117,8 @@ def bip32_extract_key(data):
 
 def bip32_get_network(xkey):
     try:
-        vbyte = bitcoin.get_version_byte(xkey)
-        header = chr(vbyte) + bitcoin.b58check_to_bin(xkey)[:3]
+        vbyte = get_version_byte(xkey)
+        header = chr(vbyte) + b58check_to_bin(xkey)[:3]
         if header == BIP32_PUBLIC[0] or header == BIP32_PRIVATE[0]:
             return 'btc'
         if header == BIP32_PUBLIC[1] or header == BIP32_PRIVATE[1]:
