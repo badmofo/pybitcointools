@@ -95,7 +95,7 @@ def bip32_deserialize(data):
 def raw_bip32_privtopub(rawtuple):
     vbytes, depth, fingerprint, i, chaincode, key = rawtuple
     header = BIP32_PUBLIC[int(vbytes == BIP32_PRIVATE[1])]
-    return (header, depth, fingerprint, i, chaincode, qprivtopub(key))
+    return (header, depth, fingerprint, i, chaincode, privtopub(key))
 
 def bip32_privtopub(data):
     return bip32_serialize(raw_bip32_privtopub(bip32_deserialize(data)))
