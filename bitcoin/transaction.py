@@ -121,27 +121,6 @@ def signature_form(tx, i, script, hashcode = SIGHASH_ALL):
 
 ### Making the actual signatures
 
-def der_encode_num(n):
-    h = encode(n,256).encode('hex')
-    b = binascii.unhexlify(h)
-    if ord(b[0]) < 0x80:
-        return h
-    else:
-        return '00' + h
-
-def der_encode_sig(v,r,s):
-    b1, b2 = der_encode_num(r), der_encode_num(s)
-    left = '02'+encode(len(b1)/2,16,2)+b1
-    right = '02'+encode(len(b2)/2,16,2)+b2
-    return '30'+encode(len(left+right)/2,16,2)+left+right
-
-def der_decode_sig(sig):
-    leftlen = decode(sig[6:8],16)*2
-    left = sig[8:8+leftlen]
-    rightlen = decode(sig[10+leftlen:12+leftlen],16)*2
-    right = sig[12+leftlen:12+leftlen+rightlen]
-    return (None,decode(left,16),decode(right,16))
-
 def txhash(tx,hashcode=None):
     if re.match('^[0-9a-fA-F]*$',tx):
         tx = changebase(tx,16,256)
@@ -157,13 +136,6 @@ def ecdsa_tx_sign(tx,priv,hashcode=SIGHASH_ALL):
 
 def ecdsa_tx_verify(tx,sig,pub,hashcode=SIGHASH_ALL):
     return ecdsa_raw_verify(bin_txhash(tx,hashcode),der_decode_sig(sig),pub)
-
-def ecdsa_tx_recover(tx,sig,hashcode=SIGHASH_ALL):
-    z = bin_txhash(tx,hashcode)
-    _,r,s = der_decode_sig(sig)
-    left = ecdsa_raw_recover(z,(0,r,s))
-    right = ecdsa_raw_recover(z,(1,r,s))
-    return (encode_pubkey(left,'hex'), encode_pubkey(right,'hex'))
 
 ### Scripts
 

@@ -1,6 +1,15 @@
 #!/usr/bin/python
 import hashlib, re, sys, os, base64, time, random, hmac
 import ripemd
+import binascii
+import ctypes
+import ctypes.util
+
+lib = ctypes.util.find_library('libsecp256k1') or ctypes.util.find_library('secp256k1')
+assert lib, 'failed to find libsecp256k1'
+sipa = ctypes.cdll.LoadLibrary(lib)
+assert sipa, 'failed to load libsecp256k1'
+sipa.secp256k1_start()
 
 ### Elliptic curve parameters (secp256k1)
 
@@ -108,20 +117,31 @@ def base10_add(a,b):
   x = (m*m-a[0]-b[0]) % P
   y = (m*(a[0]-x)-a[1]) % P
   return (x,y)
-  
-def base10_double(a):
-  if isinf(a): return (0,0)
-  m = ((3*a[0]*a[0]+A)*inv(2*a[1],P)) % P
-  x = (m*m-2*a[0]) % P
-  y = (m*(a[0]-x)-a[1]) % P
-  return (x,y)
 
-def base10_multiply(a,n):
-  if isinf(a) or n == 0: return (0,0)
-  if n == 1: return a
-  if n < 0 or n >= N: return base10_multiply(a,n%N)
-  if (n%2) == 0: return base10_double(base10_multiply(a,n/2))
-  if (n%2) == 1: return base10_add(base10_double(base10_multiply(a,n/2)),a)
+
+def base10_multiply(point, exponent):
+    exponent = encode_privkey(exponent, 'bin')
+    if point != G:
+        pubkey = encode_pubkey(point, 'bin')
+        pubkey_buffer = ctypes.create_string_buffer(len(pubkey))
+        pubkey_length = ctypes.c_int()
+        pubkey_buffer.value = pubkey
+        pubkey_length.value = len(pubkey)
+        sipa.secp256k1_ecdsa_pubkey_tweak_mul(
+            ctypes.byref(pubkey_buffer), 
+            pubkey_length,
+            exponent)
+    else:
+        pubkey_buffer = ctypes.create_string_buffer(65)
+        pubkey_length = ctypes.c_int()
+        sipa.secp256k1_ecdsa_pubkey_create(
+            ctypes.byref(pubkey_buffer), 
+            ctypes.byref(pubkey_length),
+            exponent,
+            0)
+    x = decode(pubkey_buffer.raw[1:33], 256)
+    y = decode(pubkey_buffer.raw[33:65], 256)
+    return (x, y)
 
 # Functions for handling pubkey and privkey formats
 
@@ -366,6 +386,27 @@ pubtoaddr = pubkey_to_address
 
 ### EDCSA
 
+def der_encode_num(n):
+    h = encode(n,256).encode('hex')
+    b = binascii.unhexlify(h)
+    if ord(b[0]) < 0x80:
+        return h
+    else:
+        return '00' + h
+
+def der_encode_sig(v,r,s):
+    b1, b2 = der_encode_num(r), der_encode_num(s)
+    left = '02'+encode(len(b1)/2,16,2)+b1
+    right = '02'+encode(len(b2)/2,16,2)+b2
+    return '30'+encode(len(left+right)/2,16,2)+left+right
+
+def der_decode_sig(sig):
+    leftlen = decode(sig[6:8],16)*2
+    left = sig[8:8+leftlen]
+    rightlen = decode(sig[10+leftlen:12+leftlen],16)*2
+    right = sig[12+leftlen:12+leftlen+rightlen]
+    return (None,decode(left,16),decode(right,16))
+
 def encode_sig(v,r,s):
     vb, rb, sb = chr(v), encode(r,256), encode(s,256)
     return base64.b64encode(vb+'\x00'*(32-len(rb))+rb+'\x00'*(32-len(sb))+sb)
@@ -386,50 +427,95 @@ def deterministic_generate_k(msghash,priv):
     v = hmac.new(k, v, hashlib.sha256).digest()
     return decode(hmac.new(k, v, hashlib.sha256).digest(),256)
 
-def ecdsa_raw_sign(msghash,priv):
-
-    z = hash_to_int(msghash)
-    k = deterministic_generate_k(msghash,priv)
-
-    r,y = base10_multiply(G,k)
-    s = inv(k,N) * (z + r*decode_privkey(priv)) % N
-
-    # enforce low S values
-    if s > N / 2:
-        s = N - s
-
-    return 27+(y%2),r,s
+def ecdsa_raw_sign(msghash, priv):
+    
+    assert len(msghash) == 32
+    msghash_buffer = ctypes.create_string_buffer(32)
+    msghash_buffer.value = msghash
+    sig_buffer = ctypes.create_string_buffer(64)
+    seckey_buffer = ctypes.create_string_buffer(32)
+    seckey_buffer.value = encode_privkey(priv, 'bin')
+    nonce_buffer = ctypes.create_string_buffer(32)
+    nonce_buffer.value = encode(deterministic_generate_k(msghash, priv), 256, 32)
+    recid = ctypes.c_int()
+    
+    result = sipa.secp256k1_ecdsa_sign_compact(
+        msghash_buffer, 32, ctypes.byref(sig_buffer), seckey_buffer, nonce_buffer, ctypes.byref(recid))
+        
+    if not result:
+        raise Exception('ecdsa_raw_sign: invalid nonce')
+    
+    compressed = (4 if 'compressed' in get_privkey_format(priv) else 0)
+    
+    return 27 + compressed + recid.value, decode(sig_buffer.raw[:32], 256), decode(sig_buffer.raw[32:], 256)
 
 def ecdsa_sign(msg,priv):
-    return encode_sig(*ecdsa_raw_sign(electrum_sig_hash(msg),priv))
+    msghash = electrum_sig_hash(msg)
+    return encode_sig(*ecdsa_raw_sign(msghash,priv))
 
-def ecdsa_raw_verify(msghash,vrs,pub):
-    v,r,s = vrs
-
-    w = inv(s,N)
-    z = hash_to_int(msghash)
+def ecdsa_raw_verify(msghash, sig, pub):
     
-    u1, u2 = z*w % N, r*w % N
-    x,y = base10_add(base10_multiply(G,u1), base10_multiply(decode_pubkey(pub),u2))
-
-    return r == x
+    sig_bin = der_encode_sig(*sig).decode('hex')
+    pub_bin = encode_pubkey(pub, 'bin')
+    
+    msg_buffer = ctypes.create_string_buffer(len(msghash))
+    msg_buffer.value = msghash
+    msg_length = ctypes.c_int()
+    msg_length.value = len(msghash)
+    sig_buffer = ctypes.create_string_buffer(len(sig_bin))
+    sig_buffer.value = sig_bin
+    sig_length = ctypes.c_int()
+    sig_length.value = len(sig_bin)
+    pub_buffer = ctypes.create_string_buffer(len(pub_bin))
+    pub_buffer.value = pub_bin
+    pub_length = ctypes.c_int()
+    pub_length.value = len(pub_bin)
+    
+    return 1 == sipa.secp256k1_ecdsa_verify(
+        msg_buffer, msg_length, 
+        sig_buffer, sig_length, 
+        pub_buffer, pub_length)
 
 def ecdsa_verify(msg,sig,pub):
     return ecdsa_raw_verify(electrum_sig_hash(msg),decode_sig(sig),pub)
 
-def ecdsa_raw_recover(msghash,vrs):
-    v,r,s = vrs
+def decode_recid_compressed(signature):
+    v, r, s = decode_sig(signature)
+    
+    if v < 27 or v >= 35:
+        raise Exception("Bad encoding")
+    if v >= 31:
+        compressed = True
+        v -= 4
+    else:
+        compressed = False
+    recid = v - 27
+    return recid, compressed
 
-    x = r
-    beta = pow(x*x*x+A*x+B,(P+1)/4,P)
-    y = beta if v%2 ^ beta%2 else (P - beta)
-    z = hash_to_int(msghash)
+def ecdsa_recover(message, signature):
+    
+    try:
+        recid, compressed = decode_recid_compressed(signature)
+    except:
+        return None
+    
+    message = electrum_sig_hash(message)
+    message_buffer = ctypes.create_string_buffer(len(message))
+    message_length = ctypes.c_int()
+    message_buffer.value = message
+    message_length.value = len(message)
 
-    Qr = base10_add(neg_pubkey(base10_multiply(G,z)),base10_multiply((x,y),s))
-    Q = base10_multiply(Qr,inv(r,N))
+    sig_buffer = ctypes.create_string_buffer(64)
+    sig_buffer.value = signature.decode('base64')[1:]
 
-    if ecdsa_raw_verify(msghash,vrs,Q): return Q
-    return False
+    pubkey_buffer = ctypes.create_string_buffer(65)
+    pubkey_length = ctypes.c_int()
 
-def ecdsa_recover(msg,sig):
-    return encode_pubkey(ecdsa_raw_recover(electrum_sig_hash(msg),decode_sig(sig)),'hex')
+    result = sipa.secp256k1_ecdsa_recover_compact(
+        ctypes.byref(message_buffer), message_length,
+        ctypes.byref(sig_buffer),
+        ctypes.byref(pubkey_buffer), ctypes.byref(pubkey_length),
+        int(compressed), recid)
+    
+    if result:
+        return pubkey_buffer.raw[0:pubkey_length.value].encode('hex')
