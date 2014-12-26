@@ -172,10 +172,7 @@ def p2sh_scriptaddr(script, magicbyte=5):
     return hex_to_b58check(hash160(script), magicbyte)
 scriptaddr = p2sh_scriptaddr
 
-
-def deserialize_script(script):
-    if re.match('^[0-9a-fA-F]*$',script):
-        return json_changebase(deserialize_script(script.decode('hex')),lambda x:x.encode('hex'))
+def deserialize_script_bin(script):
     out, pos = [], 0
     while pos < len(script):
         code = ord(script[pos])
@@ -197,6 +194,11 @@ def deserialize_script(script):
             out.append(code)
             pos += 1
     return out
+
+def deserialize_script(script):
+    if re.match('^[0-9a-fA-F]*$',script):
+        return json_changebase(deserialize_script_bin(script.decode('hex')),lambda x:x.encode('hex'))
+    return deserialize_script_bin(script)
 
 def serialize_script_unit(unit):
     if isinstance(unit,int):
