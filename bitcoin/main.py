@@ -424,18 +424,6 @@ def decode_sig(sig):
     bytez = base64.b64decode(sig)
     return ord(bytez[0]), decode(bytez[1:33],256), decode(bytez[33:],256)
 
-# https://tools.ietf.org/html/rfc6979#section-3.2
-def deterministic_generate_k(msghash,priv):
-    v = '\x01' * 32
-    k = '\x00' * 32
-    priv = encode_privkey(priv,'bin')
-    msghash = encode(hash_to_int(msghash),256,32)
-    k = hmac.new(k, v+'\x00'+priv+msghash, hashlib.sha256).digest()
-    v = hmac.new(k, v, hashlib.sha256).digest()
-    k = hmac.new(k, v+'\x01'+priv+msghash, hashlib.sha256).digest()
-    v = hmac.new(k, v, hashlib.sha256).digest()
-    return decode(hmac.new(k, v, hashlib.sha256).digest(),256)
-
 def ecdsa_raw_sign(msghash, priv):
     
     assert len(msghash) == 32
@@ -444,12 +432,10 @@ def ecdsa_raw_sign(msghash, priv):
     sig_buffer = ctypes.create_string_buffer(64)
     seckey_buffer = ctypes.create_string_buffer(32)
     seckey_buffer.value = encode_privkey(priv, 'bin')
-    nonce_buffer = ctypes.create_string_buffer(32)
-    nonce_buffer.value = encode(deterministic_generate_k(msghash, priv), 256, 32)
     recid = ctypes.c_int()
     
     result = sipa.secp256k1_ecdsa_sign_compact(
-        msghash_buffer, 32, ctypes.byref(sig_buffer), seckey_buffer, nonce_buffer, ctypes.byref(recid))
+        msghash_buffer, ctypes.byref(sig_buffer), seckey_buffer, 0, 0, ctypes.byref(recid))
         
     if not result:
         raise Exception('ecdsa_raw_sign: invalid nonce')
@@ -469,8 +455,6 @@ def ecdsa_raw_verify(msghash, sig, pub):
     
     msg_buffer = ctypes.create_string_buffer(len(msghash))
     msg_buffer.value = msghash
-    msg_length = ctypes.c_int()
-    msg_length.value = len(msghash)
     sig_buffer = ctypes.create_string_buffer(len(sig_bin))
     sig_buffer.value = sig_bin
     sig_length = ctypes.c_int()
@@ -481,7 +465,7 @@ def ecdsa_raw_verify(msghash, sig, pub):
     pub_length.value = len(pub_bin)
     
     return 1 == sipa.secp256k1_ecdsa_verify(
-        msg_buffer, msg_length, 
+        msg_buffer, 
         sig_buffer, sig_length, 
         pub_buffer, pub_length)
 
@@ -510,9 +494,7 @@ def ecdsa_recover(message, signature):
     
     message = electrum_sig_hash(message)
     message_buffer = ctypes.create_string_buffer(len(message))
-    message_length = ctypes.c_int()
     message_buffer.value = message
-    message_length.value = len(message)
 
     sig_buffer = ctypes.create_string_buffer(64)
     sig_buffer.value = signature.decode('base64')[1:]
@@ -521,7 +503,7 @@ def ecdsa_recover(message, signature):
     pubkey_length = ctypes.c_int()
 
     result = sipa.secp256k1_ecdsa_recover_compact(
-        ctypes.byref(message_buffer), message_length,
+        ctypes.byref(message_buffer),
         ctypes.byref(sig_buffer),
         ctypes.byref(pubkey_buffer), ctypes.byref(pubkey_length),
         int(compressed), recid)
