@@ -9,7 +9,7 @@ lib = ctypes.util.find_library('libsecp256k1') or ctypes.util.find_library('secp
 assert lib, 'failed to find libsecp256k1'
 sipa = ctypes.cdll.LoadLibrary(lib)
 assert sipa, 'failed to load libsecp256k1'
-sipa.secp256k1_start()
+sipa.secp256k1_start(0b11)
 
 ### Elliptic curve parameters (secp256k1)
 
@@ -118,6 +118,15 @@ def base10_add(a,b):
   y = (m*(a[0]-x)-a[1]) % P
   return (x,y)
 
+def privkey_to_pubkey_bin(exponent):
+    pubkey_buffer = ctypes.create_string_buffer(65)
+    pubkey_length = ctypes.c_int()
+    sipa.secp256k1_ec_pubkey_create(
+        ctypes.byref(pubkey_buffer), 
+        ctypes.byref(pubkey_length),
+        exponent,
+        0)
+    return pubkey_buffer.raw
 
 def base10_multiply(point, exponent):
     exponent = encode_privkey(exponent, 'bin')
@@ -127,14 +136,14 @@ def base10_multiply(point, exponent):
         pubkey_length = ctypes.c_int()
         pubkey_buffer.value = pubkey
         pubkey_length.value = len(pubkey)
-        sipa.secp256k1_ecdsa_pubkey_tweak_mul(
+        sipa.secp256k1_ec_pubkey_tweak_mul(
             ctypes.byref(pubkey_buffer), 
             pubkey_length,
             exponent)
     else:
         pubkey_buffer = ctypes.create_string_buffer(65)
         pubkey_length = ctypes.c_int()
-        sipa.secp256k1_ecdsa_pubkey_create(
+        sipa.secp256k1_ec_pubkey_create(
             ctypes.byref(pubkey_buffer), 
             ctypes.byref(pubkey_length),
             exponent,
