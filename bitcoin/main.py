@@ -118,14 +118,14 @@ def base10_add(a,b):
   y = (m*(a[0]-x)-a[1]) % P
   return (x,y)
 
-def privkey_to_pubkey_bin(exponent):
+def privkey_to_pubkey_bin(exponent, compressed=False):
     pubkey_buffer = ctypes.create_string_buffer(65)
     pubkey_length = ctypes.c_int()
     sipa.secp256k1_ec_pubkey_create(
         ctypes.byref(pubkey_buffer), 
         ctypes.byref(pubkey_length),
         exponent,
-        0)
+        int(compressed))
     return pubkey_buffer.raw
 
 def base10_multiply(point, exponent):
