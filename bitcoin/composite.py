@@ -1,3 +1,7 @@
+from main import *
+from bci import *
+from transaction import *
+
 # Takes privkey, address, value (satoshis), fee (satoshis)
 def send(frm,to,value,fee=1000):
     u = unspent(privtoaddr(frm))
