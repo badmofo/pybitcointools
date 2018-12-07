@@ -5,11 +5,77 @@ import binascii
 import ctypes
 import ctypes.util
 
-lib = ctypes.util.find_library('libsecp256k1') or ctypes.util.find_library('secp256k1')
-assert lib, 'failed to find libsecp256k1'
-sipa = ctypes.cdll.LoadLibrary(lib)
-assert sipa, 'failed to load libsecp256k1'
-sipa.secp256k1_start(0b11)
+
+SECP256K1_FLAGS_TYPE_MASK = ((1 << 8) - 1)
+SECP256K1_FLAGS_TYPE_CONTEXT = (1 << 0)
+SECP256K1_FLAGS_TYPE_COMPRESSION = (1 << 1)
+# /** The higher bits contain the actual data. Do not use directly. */
+SECP256K1_FLAGS_BIT_CONTEXT_VERIFY = (1 << 8)
+SECP256K1_FLAGS_BIT_CONTEXT_SIGN = (1 << 9)
+SECP256K1_FLAGS_BIT_COMPRESSION = (1 << 8)
+
+# /** Flags to pass to secp256k1_context_create. */
+SECP256K1_CONTEXT_VERIFY = (SECP256K1_FLAGS_TYPE_CONTEXT | SECP256K1_FLAGS_BIT_CONTEXT_VERIFY)
+SECP256K1_CONTEXT_SIGN = (SECP256K1_FLAGS_TYPE_CONTEXT | SECP256K1_FLAGS_BIT_CONTEXT_SIGN)
+SECP256K1_CONTEXT_NONE = (SECP256K1_FLAGS_TYPE_CONTEXT)
+
+SECP256K1_FLAGS_BIT_COMPRESSION = (1 << 8)
+SECP256K1_EC_COMPRESSED = (SECP256K1_FLAGS_TYPE_COMPRESSION | SECP256K1_FLAGS_BIT_COMPRESSION)
+SECP256K1_EC_UNCOMPRESSED = (SECP256K1_FLAGS_TYPE_COMPRESSION)
+
+def load_library():
+    
+    from ctypes import (
+        byref, c_byte, c_int, c_uint, c_char_p, c_size_t, c_void_p, create_string_buffer, CFUNCTYPE, POINTER
+    )
+    
+    library_path = ctypes.util.find_library('libsecp256k1') or ctypes.util.find_library('secp256k1')
+
+    secp256k1 = ctypes.cdll.LoadLibrary(library_path)
+
+    secp256k1.secp256k1_context_create.argtypes = [c_uint]
+    secp256k1.secp256k1_context_create.restype = c_void_p
+
+    secp256k1.secp256k1_context_randomize.argtypes = [c_void_p, c_char_p]
+    secp256k1.secp256k1_context_randomize.restype = c_int
+
+    secp256k1.secp256k1_ec_pubkey_create.argtypes = [c_void_p, c_void_p, c_char_p]
+    secp256k1.secp256k1_ec_pubkey_create.restype = c_int
+
+    secp256k1.secp256k1_ecdsa_sign.argtypes = [c_void_p, c_char_p, c_char_p, c_char_p, c_void_p, c_void_p]
+    secp256k1.secp256k1_ecdsa_sign.restype = c_int
+    
+    secp256k1.secp256k1_ecdsa_sign_recoverable.argtypes = [c_void_p, c_char_p, c_char_p, c_char_p, c_void_p, c_void_p]
+    secp256k1.secp256k1_ecdsa_sign_recoverable.restype = c_int
+
+    secp256k1.secp256k1_ecdsa_verify.argtypes = [c_void_p, c_char_p, c_char_p, c_char_p]
+    secp256k1.secp256k1_ecdsa_verify.restype = c_int
+
+    secp256k1.secp256k1_ec_pubkey_parse.argtypes = [c_void_p, c_char_p, c_char_p, c_int]
+    secp256k1.secp256k1_ec_pubkey_parse.restype = c_int
+
+    secp256k1.secp256k1_ec_pubkey_serialize.argtypes = [c_void_p, c_char_p, c_void_p, c_char_p, c_uint]
+    secp256k1.secp256k1_ec_pubkey_serialize.restype = c_int
+
+    secp256k1.secp256k1_ecdsa_signature_parse_compact.argtypes = [c_void_p, c_char_p, c_char_p]
+    secp256k1.secp256k1_ecdsa_signature_parse_compact.restype = c_int
+
+    secp256k1.secp256k1_ecdsa_signature_serialize_compact.argtypes = [c_void_p, c_char_p, c_char_p]
+    secp256k1.secp256k1_ecdsa_signature_serialize_compact.restype = c_int
+
+    secp256k1.secp256k1_ec_pubkey_tweak_mul.argtypes = [c_void_p, c_char_p, c_char_p]
+    secp256k1.secp256k1_ec_pubkey_tweak_mul.restype = c_int
+    
+    secp256k1.secp256k1_ecdsa_recover.argtypes = [c_void_p, c_char_p, c_char_p, c_char_p]
+    secp256k1.secp256k1_ecdsa_recover.restype = c_int
+
+    secp256k1.ctx = secp256k1.secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY)
+    r = secp256k1.secp256k1_context_randomize(secp256k1.ctx, os.urandom(32))
+    if r:
+        return secp256k1
+
+
+secp256k1 = load_library()
 
 ### Elliptic curve parameters (secp256k1)
 
@@ -118,38 +184,54 @@ def base10_add(a,b):
   y = (m*(a[0]-x)-a[1]) % P
   return (x,y)
 
-def privkey_to_pubkey_bin(exponent, compressed=False):
+
+class InvalidKeyException(Exception): pass
+
+
+def ec_pubkey_serialize(pubkey_t, compressed=False):
     pubkey_buffer = ctypes.create_string_buffer(65)
-    pubkey_length = ctypes.c_int()
-    sipa.secp256k1_ec_pubkey_create(
-        ctypes.byref(pubkey_buffer), 
+    pubkey_length = ctypes.c_size_t(65)
+    result = secp256k1.secp256k1_ec_pubkey_serialize(
+        secp256k1.ctx,
+        pubkey_buffer,
         ctypes.byref(pubkey_length),
-        exponent,
-        int(compressed))
-    return pubkey_buffer.raw
+        pubkey_t,
+        ctypes.c_uint(0b100000010 if compressed else 0b10))
+    if not result:
+        raise InvalidKeyException('invalid public key')
+    return pubkey_buffer.raw[:pubkey_length.value]
+
+def privkey_to_pubkey_bin(exponent, compressed=False):
+    pubkey_t = ctypes.create_string_buffer(64)
+    result = secp256k1.secp256k1_ec_pubkey_create(
+        secp256k1.ctx, 
+        ctypes.byref(pubkey_t),
+        exponent)
+    if not result:
+        raise InvalidKeyException('invalid public key')
+    return ec_pubkey_serialize(pubkey_t, compressed)
 
 def base10_multiply(point, exponent):
     exponent = encode_privkey(exponent, 'bin')
     if point != G:
-        pubkey = encode_pubkey(point, 'bin')
-        pubkey_buffer = ctypes.create_string_buffer(len(pubkey))
-        pubkey_length = ctypes.c_int()
-        pubkey_buffer.value = pubkey
-        pubkey_length.value = len(pubkey)
-        sipa.secp256k1_ec_pubkey_tweak_mul(
-            ctypes.byref(pubkey_buffer), 
-            pubkey_length,
+        pubkey_in = encode_pubkey(point, 'bin')
+        pubkey_t_buffer = ctypes.create_string_buffer(64)
+        result = secp256k1.secp256k1_ec_pubkey_parse(
+            secp256k1.ctx,
+            pubkey_t_buffer,
+            pubkey_in,
+            ctypes.c_int(len(pubkey_in)))
+        if not result:
+            raise InvalidKeyException('invalid public key')
+        secp256k1.secp256k1_ec_pubkey_tweak_mul(
+            secp256k1.ctx,
+            pubkey_t_buffer,
             exponent)
+        pubkey_buffer = ec_pubkey_serialize(pubkey_t_buffer)
     else:
-        pubkey_buffer = ctypes.create_string_buffer(65)
-        pubkey_length = ctypes.c_int()
-        sipa.secp256k1_ec_pubkey_create(
-            ctypes.byref(pubkey_buffer), 
-            ctypes.byref(pubkey_length),
-            exponent,
-            0)
-    x = decode(pubkey_buffer.raw[1:33], 256)
-    y = decode(pubkey_buffer.raw[33:65], 256)
+        pubkey_buffer = privkey_to_pubkey_bin(exponent)
+    x = decode(pubkey_buffer[1:33], 256)
+    y = decode(pubkey_buffer[33:65], 256)
     return (x, y)
 
 # Functions for handling pubkey and privkey formats
@@ -429,45 +511,53 @@ def ecdsa_raw_sign(msghash, priv):
     assert len(msghash) == 32
     msghash_buffer = ctypes.create_string_buffer(32)
     msghash_buffer.value = msghash
-    sig_buffer = ctypes.create_string_buffer(64)
+    sig_buffer = ctypes.create_string_buffer(65)
     seckey_buffer = ctypes.create_string_buffer(32)
     seckey_buffer.value = encode_privkey(priv, 'bin')
-    recid = ctypes.c_int()
     
-    result = sipa.secp256k1_ecdsa_sign_compact(
-        msghash_buffer, ctypes.byref(sig_buffer), seckey_buffer, 0, 0, ctypes.byref(recid))
-        
+    result = secp256k1.secp256k1_ecdsa_sign_recoverable(
+        secp256k1.ctx, sig_buffer, msghash_buffer, seckey_buffer, None, None)
     if not result:
-        raise Exception('ecdsa_raw_sign: invalid nonce')
+        raise Exception('secp256k1_ecdsa_sign_recoverable')
+    recid = ord(sig_buffer[64])
+        
+    compact_signature = ctypes.create_string_buffer(64)
+    result = secp256k1.secp256k1_ecdsa_signature_serialize_compact(secp256k1.ctx, compact_signature, sig_buffer)
+    if not result:
+        raise Exception('secp256k1_ecdsa_signature_serialize_compact')
     
     compressed = (4 if 'compressed' in get_privkey_format(priv) else 0)
     
-    return 27 + compressed + recid.value, decode(sig_buffer.raw[:32], 256), decode(sig_buffer.raw[32:], 256)
+    return 27 + compressed + recid, decode(compact_signature.raw[:32], 256), decode(compact_signature.raw[32:64], 256)
 
 def ecdsa_sign(msg,priv):
     msghash = electrum_sig_hash(msg)
     return encode_sig(*ecdsa_raw_sign(msghash,priv))
 
 def ecdsa_raw_verify(msghash, sig, pub):
-    
-    sig_bin = der_encode_sig(*sig).decode('hex')
-    pub_bin = encode_pubkey(pub, 'bin')
-    
+    v,r,s = sig
+    sig = ctypes.create_string_buffer(64)
+    input64 = encode(r, 256, 32) + encode(s, 256, 32) # der_encode_sig(*sig).decode('hex')
+    r = secp256k1.secp256k1_ecdsa_signature_parse_compact(secp256k1.ctx, sig, input64)
+    if not r:
+        return False
+    r = secp256k1.secp256k1_ecdsa_signature_normalize(secp256k1.ctx, sig, sig)
+
+    pub = encode_pubkey(pub, 'bin')
+    pubkey_t_buffer = ctypes.create_string_buffer(64)
+    result = secp256k1.secp256k1_ec_pubkey_parse(
+        secp256k1.ctx,
+        pubkey_t_buffer,
+        pub,
+        ctypes.c_int(len(pub)))
+    if not result:
+        raise InvalidKeyException('invalid public key')
+        
     msg_buffer = ctypes.create_string_buffer(len(msghash))
     msg_buffer.value = msghash
-    sig_buffer = ctypes.create_string_buffer(len(sig_bin))
-    sig_buffer.value = sig_bin
-    sig_length = ctypes.c_int()
-    sig_length.value = len(sig_bin)
-    pub_buffer = ctypes.create_string_buffer(len(pub_bin))
-    pub_buffer.value = pub_bin
-    pub_length = ctypes.c_int()
-    pub_length.value = len(pub_bin)
-    
-    return 1 == sipa.secp256k1_ecdsa_verify(
-        msg_buffer, 
-        sig_buffer, sig_length, 
-        pub_buffer, pub_length)
+
+    return 1 == secp256k1.secp256k1_ecdsa_verify(secp256k1.ctx, sig, msg_buffer, pubkey_t_buffer)
+
 
 def ecdsa_verify(msg,sig,pub):
     return ecdsa_raw_verify(electrum_sig_hash(msg),decode_sig(sig),pub)
@@ -498,15 +588,22 @@ def ecdsa_recover(message, signature):
 
     sig_buffer = ctypes.create_string_buffer(64)
     sig_buffer.value = signature.decode('base64')[1:]
-
-    pubkey_buffer = ctypes.create_string_buffer(65)
-    pubkey_length = ctypes.c_int()
-
-    result = sipa.secp256k1_ecdsa_recover_compact(
-        ctypes.byref(message_buffer),
-        ctypes.byref(sig_buffer),
-        ctypes.byref(pubkey_buffer), ctypes.byref(pubkey_length),
-        int(compressed), recid)
+    sig_buffer_r = ctypes.create_string_buffer(65)
     
+    result = secp256k1.secp256k1_ecdsa_recoverable_signature_parse_compact(
+        secp256k1.ctx,
+        sig_buffer_r,
+        sig_buffer,
+        recid)
+    if not result:
+        return None
+
+    pubkey_t_buffer = ctypes.create_string_buffer(64)
+
+    result = secp256k1.secp256k1_ecdsa_recover(
+                secp256k1.ctx,
+                pubkey_t_buffer,
+                sig_buffer_r,
+                message_buffer)
     if result:
-        return pubkey_buffer.raw[0:pubkey_length.value].encode('hex')
+        return ec_pubkey_serialize(pubkey_t_buffer, compressed).encode('hex')
