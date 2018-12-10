@@ -48,6 +48,13 @@ def deserialize(tx):
     def read_bytes(bytez):
         pos[0] += bytez
         return tx[pos[0]-bytez:pos[0]]
+        
+    def read_byte():
+        pos[0] += 1
+        return ord(tx[pos[0]-1])
+        
+    def peek_byte():
+        return ord(tx[pos[0]])
 
     def read_var_string():
         size = read_var_int()
@@ -55,6 +62,15 @@ def deserialize(tx):
 
     obj = { "ins" : [] , "outs" : [] }
     obj["version"] = read_as_int(4)
+    
+    marker = peek_byte()
+    is_segwit = False
+    if marker == 0:
+        obj['marker'] = read_byte()
+        obj['flag'] = read_byte()
+        if obj['marker'] == 0 and obj['flag'] == 1:
+            is_segwit = True
+    
     ins = read_var_int()
     for i in range(ins):
         obj["ins"].append({
@@ -71,8 +87,24 @@ def deserialize(tx):
             "value" : read_as_int(8),
             "script": read_var_string()
         })
+    if is_segwit:
+        for txin in obj["ins"]:
+            n = read_var_int()
+            if n == 0:
+                txin['witness'] = '00'
+                continue
+            if n == 0xffffffff:
+                txin['value'] = read_as_int(8)
+                txin['witness_version'] = read_as_int(2)
+                n = read_var_int()
+            # now 'n' is the number of items in the witness
+            txin['witness'] = []
+            assert n < 1024 * 2
+            for j in range(n):
+                txin['witness'].append(read_var_string())
     obj["locktime"] = read_as_int(4)
     return obj
+
 
 def serialize(txobj):
     o = []

@@ -41,8 +41,10 @@ def crack_electrum_wallet(mpk,pk,n,for_change=0):
     return subtract_privkeys(pk, offset)
 
 # Below code ASSUMES binary inputs and compressed pubkeys
-BIP32_PUBLIC  = ['\x04\x88\xb2\x1e', '\x04\x35\x87\xcf'] # mainnet, testnet
-BIP32_PRIVATE = ['\x04\x88\xad\xe4', '\x04\x35\x83\x94'] # mainnet, testnet
+# mainnet, testnet, mainnet-p2wsh, testnet-p2wsh
+BIP32_PUBLIC  = ['\x04\x88\xb2\x1e', '\x04\x35\x87\xcf', '\x02\xaa\x7e\xd3', '\x02\x57\x54\x83']
+BIP32_PRIVATE = ['\x04\x88\xad\xe4', '\x04\x35\x83\x94', '\x02\xaa\x7a\x99', '\x02\x57\x50\x48']
+
 
 # BIP32 child key derivation
 def raw_bip32_ckd(rawtuple, i):
@@ -94,7 +96,7 @@ def bip32_deserialize(data):
 
 def raw_bip32_privtopub(rawtuple):
     vbytes, depth, fingerprint, i, chaincode, key = rawtuple
-    header = BIP32_PUBLIC[int(vbytes == BIP32_PRIVATE[1])]
+    header = BIP32_PUBLIC[BIP32_PRIVATE.index(vbytes)]
     return (header, depth, fingerprint, i, chaincode, privtopub(key))
 
 def bip32_privtopub(data):
@@ -105,7 +107,8 @@ def bip32_ckd(data,i):
 
 def bip32_master_key(seed, network='btc'):
     assert network in ('btc', 'testnet')
-    header = BIP32_PRIVATE[0] if network == 'btc' else BIP32_PRIVATE[1]
+    headers = {'btc': BIP32_PRIVATE[0], 'testnet': BIP32_PRIVATE[1], 'btc-p2wsh': BIP32_PRIVATE[2], 'testnet-p2wsh': BIP32_PRIVATE[3]}
+    header = headers.get(network)
     I = hmac.new("Bitcoin seed",seed,hashlib.sha512).digest()
     return bip32_serialize((header, 0, '\x00'*4, 0, I[32:], I[:32]+'\x01'))
 
@@ -119,9 +122,9 @@ def bip32_get_network(xkey):
     try:
         vbyte = get_version_byte(xkey)
         header = chr(vbyte) + b58check_to_bin(xkey)[:3]
-        if header == BIP32_PUBLIC[0] or header == BIP32_PRIVATE[0]:
+        if header in (BIP32_PUBLIC[0], BIP32_PRIVATE[0], BIP32_PUBLIC[2], BIP32_PRIVATE[2]):
             return 'btc'
-        if header == BIP32_PUBLIC[1] or header == BIP32_PRIVATE[1]:
+        if header in (BIP32_PUBLIC[1], BIP32_PRIVATE[1], BIP32_PUBLIC[3], BIP32_PRIVATE[3]):
             return 'testnet' 
     except AssertionError, e:
         pass
