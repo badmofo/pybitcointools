@@ -28,8 +28,11 @@ def load_library():
     from ctypes import (
         byref, c_byte, c_int, c_uint, c_char_p, c_size_t, c_void_p, create_string_buffer, CFUNCTYPE, POINTER
     )
+    import os.path
     
-    library_path = ctypes.util.find_library('libsecp256k1') or ctypes.util.find_library('secp256k1')
+    library_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'libsecp256k1.so')
+    if not os.path.exists(library_path):
+        library_path = ctypes.util.find_library('libsecp256k1') or ctypes.util.find_library('secp256k1')
 
     secp256k1 = ctypes.cdll.LoadLibrary(library_path)
 
